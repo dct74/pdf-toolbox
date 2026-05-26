@@ -10,21 +10,15 @@ import Darwin
 // Global lock for serializing terminal output
 private let outputLock = NSLock()
 
-private func lockedPrint(_ item: Any) {
+private func lockedPrint(_ item: Any, terminator: String = "\n") {
     outputLock.lock()
     defer { outputLock.unlock() }
-    print(item)
-}
-
-private func lockedPrint(_ items: Any..., separator: String = " ", terminator: String = "\n") {
-    outputLock.lock()
-    defer { outputLock.unlock() }
-    print(items.map { "\($0)" }.joined(separator: separator), terminator: terminator)
+    print(item, terminator: terminator)
 }
 
 // MARK: - Terminal Output Helpers with ANSI colors
 private func printError(_ message: String) {
-    lockedPrint("\u{001B}[31m❌ \(message)\u{001B}[0m"); fflush(stdout)
+    lockedPrint("\u{001B}[31m✘ \(message)\u{001B}[0m"); fflush(stdout)
 }
 
 private func printWarning(_ message: String) {
@@ -32,11 +26,11 @@ private func printWarning(_ message: String) {
 }
 
 private func printSuccess(_ message: String) {
-    lockedPrint("\u{001B}[32m✅ \(message)\u{001B}[0m"); fflush(stdout)
+    lockedPrint("\u{001B}[32m✔︎ \(message)\u{001B}[0m"); fflush(stdout)
 }
 
 private func printInfo(_ message: String) {
-    lockedPrint("\u{001B}[36mℹ️ \(message)\u{001B}[0m"); fflush(stdout)
+    lockedPrint("\u{001B}[36m🔔 \(message)\u{001B}[0m"); fflush(stdout)
 }
 
 // MARK: - Graceful Cancellation State (Thread-Safe)
@@ -167,6 +161,10 @@ enum PDFToolError: LocalizedError {
     }
 }
 
+// OCR configuration — created once per page because VNRecognizeTextRequest is single-use.
+private let ocrRecognitionLevel: VNRequestTextRecognitionLevel = .accurate
+private let ocrRecognitionLanguages: [String] = ["zh-Hans", "zh-Hant", "en-US"]
+
 // MARK: - Core Processing Logic
 
 private func checkCancellation() throws {
@@ -203,7 +201,11 @@ func compressPDF(url: URL, spinner: Spinner) async throws -> TaskResult? {
     let compressedSize = (try? FileManager.default.attributesOfItem(atPath: outURL.path)[.size] as? Int64) ?? 0
 
     if compressedSize >= originalSize || originalSize == 0 {
-        try? FileManager.default.removeItem(at: outURL)
+        do {
+            try FileManager.default.removeItem(at: outURL)
+        } catch {
+            printWarning("Could not remove unneeded output \(outURL.lastPathComponent): \(error.localizedDescription)")
+        }
         return .warning("Skipped \(url.lastPathComponent): Original file is empty or already optimally compressed.")
     } else {
         let reduction = Double(originalSize - compressedSize) / Double(originalSize) * 100
@@ -239,25 +241,23 @@ func toJPEG(url: URL, spinner: Spinner) async throws -> TaskResult? {
     for i in 0..<doc.pageCount {
         try checkCancellation()
         spinner.update(message: "Converting page \(i + 1)/\(doc.pageCount) to JPEG...")
-        autoreleasepool {
-            guard let page = doc.page(at: i) else { return }
-            let rect = page.bounds(for: .mediaBox)
-            let width = Int(rect.width * scale)
-            let height = Int(rect.height * scale)
+        guard let page = doc.page(at: i) else { continue }
+        let rect = page.bounds(for: .mediaBox)
+        let width = Int(rect.width * scale)
+        let height = Int(rect.height * scale)
 
-            guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-                  let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+              let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { continue }
 
-            ctx.scaleBy(x: scale, y: scale)
-            page.draw(with: .mediaBox, to: ctx)
-            guard let cgImage = ctx.makeImage() else { return }
-            let outURL = outputDir.appendingPathComponent("\(url.deletingPathExtension().lastPathComponent)_Page\(i + 1).jpg")
+        ctx.scaleBy(x: scale, y: scale)
+        page.draw(with: .mediaBox, to: ctx)
+        guard let cgImage = ctx.makeImage() else { continue }
+        let outURL = outputDir.appendingPathComponent("\(url.deletingPathExtension().lastPathComponent)_Page\(i + 1).jpg")
 
-            guard let dest = CGImageDestinationCreateWithURL(outURL as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else { return }
-            let options: CFDictionary = [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary
-            CGImageDestinationAddImage(dest, cgImage, options)
-            CGImageDestinationFinalize(dest)
-        }
+        guard let dest = CGImageDestinationCreateWithURL(outURL as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else { continue }
+        let options: CFDictionary = [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary
+        CGImageDestinationAddImage(dest, cgImage, options)
+        CGImageDestinationFinalize(dest)
     }
     return .success("Converted: \(doc.pageCount) image(s) -> \(outputDir.lastPathComponent)/")
 }
@@ -274,8 +274,8 @@ func convertToWord(url: URL, spinner: Spinner, forceOCR: Bool) async throws -> T
         spinner.update(message: "Extracting text via textutil...")
         let tempTxt = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("\(url.deletingPathExtension().lastPathComponent)_temp.txt")
         
-        defer { try? FileManager.default.removeItem(at: tempTxt) }
-        
+        defer { try? FileManager.default.removeItem(at: tempTxt) } // temp file; failure is harmless
+
         do {
             try text.write(to: tempTxt, atomically: true, encoding: .utf8)
             let process = Process()
@@ -299,7 +299,14 @@ func convertToWord(url: URL, spinner: Spinner, forceOCR: Bool) async throws -> T
         spinner.update(message: "Detected scanned PDF. Preparing OCR...")
     }
     
-    try? FileManager.default.removeItem(at: outURL)
+    if FileManager.default.fileExists(atPath: outURL.path) {
+        do {
+            try FileManager.default.removeItem(at: outURL)
+        } catch {
+            spinner.stop()
+            printWarning("Could not remove existing \(outURL.lastPathComponent): \(error.localizedDescription)")
+        }
+    }
     var ocrText = ""
 
     for i in 0..<doc.pageCount {
@@ -318,8 +325,8 @@ func convertToWord(url: URL, spinner: Spinner, forceOCR: Bool) async throws -> T
         guard let renderImage = colorCtx.makeImage() else { continue }
 
         let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
-        request.recognitionLanguages = ["zh-Hans", "zh-Hant", "en-US"]
+        request.recognitionLevel = ocrRecognitionLevel
+        request.recognitionLanguages = ocrRecognitionLanguages
 
         let handler = VNImageRequestHandler(cgImage: renderImage, options: [:])
         do {
@@ -340,8 +347,8 @@ func convertToWord(url: URL, spinner: Spinner, forceOCR: Bool) async throws -> T
     spinner.update(message: "Generating Word document...")
     let tempTxt = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("\(url.deletingPathExtension().lastPathComponent)_ocr_temp.txt")
     
-    defer { try? FileManager.default.removeItem(at: tempTxt) }
-    
+    defer { try? FileManager.default.removeItem(at: tempTxt) } // temp file; failure is harmless
+
     try ocrText.write(to: tempTxt, atomically: true, encoding: .utf8)
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/textutil")
@@ -410,6 +417,7 @@ func processPDFs(actionName: String, pdfs: [URL], action: @escaping (URL, Spinne
         let pdf = pdfs[0]
         let spinner = Spinner(isSilent: false)
         spinner.start(filename: pdf.lastPathComponent, initialMessage: "Initializing [\(actionName)]...")
+        // Brief pause so the spinner's "Starting" / "Initializing" line renders visibly before the action overwrites it.
         try? await Task.sleep(nanoseconds: 50_000_000)
 
         do {
@@ -446,10 +454,15 @@ func processPDFs(actionName: String, pdfs: [URL], action: @escaping (URL, Spinne
                 group.addTask {
                     await limiter.acquire()
                     defer { Task { await limiter.release() } }
-                    
+
+                    // Bail out before any heavy work if the user already cancelled.
+                    if CancellationState.shared.isCancelled {
+                        return .failure("\(pdf.lastPathComponent): Cancelled.")
+                    }
+
                     let silentSpinner = Spinner(isSilent: true)
                     silentSpinner.start(filename: pdf.lastPathComponent, initialMessage: "Initializing...")
-                    
+
                     do {
                         if let result = try await action(pdf, silentSpinner) {
                             switch result {
