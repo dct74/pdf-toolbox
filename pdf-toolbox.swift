@@ -556,6 +556,71 @@ private func printHelp() {
 
 // MARK: - Interactive Menu & Main Entry
 
+/// Reads paths that the user drags into the terminal. A shell never sees this
+/// line, so the backslash escapes and quotes Terminal inserts must be undone here.
+private func readDroppedPaths() -> [String]? {
+    lockedPrint("\n📥 Drag PDF files or folders into this window, then press Enter (empty line to exit):")
+    lockedPrint("   ", terminator: "")
+    fflush(stdout)
+
+    guard let line = readLine() else {
+        lockedPrint("No input available. Exiting.")
+        return nil
+    }
+
+    let paths = parseDroppedPaths(line)
+    guard !paths.isEmpty else {
+        lockedPrint("👋 Exit")
+        return nil
+    }
+    return paths
+}
+
+private func parseDroppedPaths(_ line: String) -> [String] {
+    var paths: [String] = []
+    var current = ""
+    var started = false
+    var escaped = false
+    var quote: Character?
+
+    for ch in line {
+        if escaped {
+            current.append(ch)
+            escaped = false
+            continue
+        }
+        switch ch {
+        case "\\":
+            escaped = true
+            started = true
+        case "\"", "'":
+            if quote == ch {
+                quote = nil
+            } else if quote == nil {
+                quote = ch
+            } else {
+                current.append(ch)
+            }
+            started = true
+        case " ", "\t":
+            if quote != nil {
+                current.append(ch)
+            } else if started {
+                paths.append(current)
+                current = ""
+                started = false
+            }
+        default:
+            current.append(ch)
+            started = true
+        }
+    }
+    if escaped { current.append("\\") }
+    if started { paths.append(current) }
+
+    return paths.map { ($0 as NSString).expandingTildeInPath }
+}
+
 func showMenu() {
     lockedPrint("\n========================================")
     lockedPrint(" 🛠️ PDF Batch Tool")
@@ -587,12 +652,9 @@ func run() async {
         }
     }
 
-    guard !remainingArgs.isEmpty else {
-        printWarning("Usage: Drag and drop PDF files or folders onto this script.")
-        lockedPrint("Example: ./PDFTool file1.pdf \"Folder With Spaces\" file2.pdf")
-        lockedPrint("Or: ./PDFTool 1 file1.pdf (1=Compress, 2=Split, 3=JPEG, 4=Word, 5=Force OCR)")
-        lockedPrint("Run with --help for more details.")
-        return
+    if remainingArgs.isEmpty {
+        guard let dropped = readDroppedPaths() else { return }
+        remainingArgs = dropped
     }
 
     let possibleChoice = remainingArgs.first

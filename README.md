@@ -20,7 +20,7 @@
 - **并发处理** — 根据 CPU 核心数自动调整并发度（2-4 任务并行）
 - **OCR 识别** — 集成 Apple Vision 框架，支持中英文（简体/繁体）混合识别
 - **优雅取消** — 按 `Ctrl+C` 可安全中断正在进行的任务
-- **交互模式** — 不传操作参数时自动进入菜单式交互界面
+- **交互模式** — 不带参数运行时提示拖入文件，随后进入菜单式交互界面
 - **彩色输出** — 终端输出带颜色标记，结果汇总一目了然
 
 ## 环境要求
@@ -34,6 +34,22 @@ brew install --formula dct74/pdf-toolbox
 ```
 
 ## 使用方法
+
+### 拖拽模式（最快）
+
+直接运行，不带任何参数：
+
+```bash
+pdftool
+```
+
+回车后会提示拖入文件：
+
+```
+📥 Drag PDF files or folders into this window, then press Enter (empty line to exit):
+```
+
+把一个或多个文件/文件夹拖进终端窗口，回车确认，再按菜单提示选操作编号（1-5 / Q）。直接回车（空行）即退出。
 
 ### 命令行模式
 
@@ -76,7 +92,7 @@ brew install --formula dct74/pdf-toolbox
 
 ### 交互模式
 
-不指定操作编号时进入交互模式：
+指定了路径但不带操作编号时，进入菜单选择操作：
 
 ```bash
 ./pdf-toolbox document.pdf
@@ -96,14 +112,6 @@ brew install --formula dct74/pdf-toolbox
 Q. Exit
 
 Enter option (1-5, Q):
-```
-
-### 拖拽操作
-
-在终端中直接拖拽文件或文件夹到脚本路径后执行：
-
-```bash
-./pdf-toolbox 1 /path/to/dropped/file.pdf
 ```
 
 ## 输出说明
