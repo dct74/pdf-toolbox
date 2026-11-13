@@ -30,8 +30,10 @@
 ## 安装
 
 ```bash
-brew install --formula dct74/pdf-toolbox
+brew install --formula dct74/tap/pdf-toolbox
 ```
+
+`--formula` 不能省：上游 homebrew-cask 有同名的 `pdf-toolbox` cask（已因 Gatekeeper 被禁用），不带该参数会解析到那个 cask 并报错。
 
 ## 使用方法
 
